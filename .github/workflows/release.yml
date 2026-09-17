@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build a release for"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine version
+        id: version
+        run: echo "version=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.version.outputs.version }}
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+
+      - name: Install yq
+        run: |
+          sudo curl -sSLo /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.53.6/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Lint and test
+        run: task lint test
+
+      - name: Build package
+        run: task package
+
+      - name: Compute checksum
+        id: checksum
+        run: echo "sha256=$(sha256sum dist/kubectl-b64edit.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release and upload archive
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          files: dist/kubectl-b64edit.tar.gz
+          generate_release_notes: true
+
+      # .krew.yaml must live on the default branch, not on the (now-tagged,
+      # immutable) release commit - check it out separately and push there.
+      - name: Checkout default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: default-branch
+
+      - name: Bump .krew.yaml on the default branch
+        working-directory: default-branch
+        run: |
+          yq eval -i '
+            .spec.version = "${{ steps.version.outputs.version }}" |
+            .spec.platforms[0].uri = "https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/kubectl-b64edit.tar.gz" |
+            .spec.platforms[0].sha256 = "${{ steps.checksum.outputs.sha256 }}"
+          ' .krew.yaml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .krew.yaml
+          if git diff --cached --quiet; then
+            echo "No manifest changes to commit"
+          else
+            git commit -m "chore: bump .krew.yaml to ${{ steps.version.outputs.version }} [skip ci]"
+            git push origin "HEAD:${{ github.event.repository.default_branch }}"
+          fi

@@ -1,0 +1,16 @@
+{
+  "apiVersion": "v1",
+  "kind": "ConfigMap",
+  "metadata": {
+    "name": "demo-cm",
+    "namespace": "default",
+    "resourceVersion": "77",
+    "uid": "cm-1"
+  },
+  "data": {
+    "app.properties": "debug=true"
+  },
+  "binaryData": {
+    "icon.png": "aVRoaXNJc05vdFJlYWxseUJpbmFyeUJ1dEJhc2U2NA=="
+  }
+}

@@ -1,0 +1,41 @@
+# k9s plugin: inline base64 edit for Secrets/ConfigMaps (and generically any
+# resource with base64-looking string fields).
+#
+# Install: copy this file to ${XDG_DATA_HOME:-~/.local/share}/k9s/plugins/
+# (or run `task install` from the repo root). Requires kubectl-b64edit to be
+# on PATH (also installed by `task install`).
+#
+# command is wrapped in `sh -c` so we can use shell parameter expansion
+# (${RESOURCE_GROUP:+.$RESOURCE_GROUP}) to omit the API group suffix for
+# core-group resources (Secret/ConfigMap), matching the fix used in k9s's
+# own bundled watch-events.yaml plugin.
+plugins:
+  b64edit:
+    shortCut: Shift-E
+    confirm: false
+    description: Edit (base64 decoded)
+    scopes:
+      - secrets
+      - configmaps
+      - all
+    dangerous: true
+    background: false
+    command: sh
+    args:
+      - -c
+      - kubectl-b64edit --context "$CONTEXT" --namespace "$NAMESPACE" "$RESOURCE_NAME${RESOURCE_GROUP:+.$RESOURCE_GROUP}" "$NAME"
+
+  b64view:
+    shortCut: Shift-V
+    confirm: false
+    description: View (base64 decoded)
+    scopes:
+      - secrets
+      - configmaps
+      - all
+    dangerous: false
+    background: false
+    command: sh
+    args:
+      - -c
+      - kubectl-b64edit --context "$CONTEXT" --namespace "$NAMESPACE" --view "$RESOURCE_NAME${RESOURCE_GROUP:+.$RESOURCE_GROUP}" "$NAME" | less -R

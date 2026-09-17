@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Stub $EDITOR for tests: applies a scripted transformation to the buffer
+# instead of opening an interactive editor.
+#
+# Controlled via env vars:
+#   STUB_EDIT_NOOP=1            leave the file untouched
+#   STUB_EDIT_SED='s/foo/bar/'  applied with sed -i
+#   STUB_EDIT_CORRUPT_ONCE=1    append invalid YAML, but only on the first
+#                               invocation (tracked via a marker file next to
+#                               the buffer) so retry-until-valid can be tested
+set -euo pipefail
+
+file="$1"
+
+if [[ "${STUB_EDIT_CORRUPT_ONCE:-0}" == "1" ]]; then
+  marker="${file}.corrupted-once"
+  if [[ ! -e "$marker" ]]; then
+    touch "$marker"
+    printf '\nSTUBCORRUPT_MARKER_LINE: [ not valid\n' >>"$file"
+    exit 0
+  fi
+  # second invocation: simulate the user removing the bad line they were shown
+  sed -i '/STUBCORRUPT_MARKER_LINE/d' "$file"
+fi
+
+if [[ "${STUB_EDIT_NOOP:-0}" == "1" ]]; then
+  exit 0
+fi
+
+if [[ -n "${STUB_EDIT_SED:-}" ]]; then
+  sed -i "$STUB_EDIT_SED" "$file"
+fi

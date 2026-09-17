@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Stub kubectl for tests: serves a fixture on `get` and records the payload
+# passed to `replace -f <file>`, optionally simulating a 409 conflict.
+set -euo pipefail
+
+cmd=""
+fflag=""
+args=("$@")
+i=0
+while [[ $i -lt ${#args[@]} ]]; do
+  a="${args[$i]}"
+  case "$a" in
+    --context|--namespace|-n|--kubeconfig|-o) i=$((i + 2)); continue ;;
+    -f) fflag="${args[$((i + 1))]}"; i=$((i + 2)); continue ;;
+    get|replace) cmd="$a"; i=$((i + 1)); continue ;;
+    *) i=$((i + 1)); continue ;;
+  esac
+done
+
+case "$cmd" in
+  get)
+    cat "${STUB_KUBECTL_FIXTURE:?STUB_KUBECTL_FIXTURE not set}"
+    ;;
+  replace)
+    if [[ "${STUB_KUBECTL_CONFLICT:-0}" == "1" ]]; then
+      echo "Error from server (Conflict): Operation cannot be fulfilled: the object has been modified; please apply your changes to the latest version and try again" >&2
+      exit 1
+    fi
+    cp "$fflag" "${STUB_KUBECTL_CAPTURE:?STUB_KUBECTL_CAPTURE not set}"
+    echo "replaced"
+    ;;
+  *)
+    echo "stub-kubectl: unhandled invocation: ${args[*]}" >&2
+    exit 1
+    ;;
+esac

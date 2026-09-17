@@ -1,0 +1,80 @@
+version: '3'
+
+vars:
+  XDG_DATA_HOME: '{{.XDG_DATA_HOME | default (printf "%s/.local/share" .HOME)}}'
+  BIN_DIR: '{{.HOME}}/.local/bin'
+  DIST_DIR: '{{.TASKFILE_DIR}}/dist'
+  ARCHIVE: '{{.DIST_DIR}}/kubectl-b64edit.tar.gz'
+
+tasks:
+  lint:
+    desc: Shellcheck the executable script and test harness (warnings and above)
+    cmds:
+      - shellcheck -S warning bin/kubectl-b64edit
+      - shellcheck -S warning test/run.sh test/stubs/kubectl test/stubs/editor
+
+  test:
+    desc: Run the stub-based test suite (no cluster required)
+    cmds:
+      - bash test/run.sh
+
+  install:
+    desc: Symlink kubectl-b64edit into ~/.local/bin and install the k9s plugin
+    cmds:
+      - mkdir -p "{{.BIN_DIR}}"
+      - ln -sf "{{.TASKFILE_DIR}}/bin/kubectl-b64edit" "{{.BIN_DIR}}/kubectl-b64edit"
+      - mkdir -p "{{.XDG_DATA_HOME}}/k9s/plugins"
+      - cp "{{.TASKFILE_DIR}}/plugins/b64edit.yaml" "{{.XDG_DATA_HOME}}/k9s/plugins/b64edit.yaml"
+      - 'echo "Installed. Ensure {{.BIN_DIR}} is on PATH (also reachable as: kubectl b64edit ...)"'
+
+  uninstall:
+    desc: Remove the installed symlink and k9s plugin file
+    cmds:
+      - rm -f "{{.BIN_DIR}}/kubectl-b64edit"
+      - rm -f "{{.XDG_DATA_HOME}}/k9s/plugins/b64edit.yaml"
+
+  package:
+    desc: Build the krew-installable tarball into dist/ and print its sha256
+    cmds:
+      - rm -rf "{{.DIST_DIR}}"
+      - mkdir -p "{{.DIST_DIR}}/stage"
+      - cp bin/kubectl-b64edit bin/decode.jq bin/encode.jq bin/summary.jq LICENSE README.md "{{.DIST_DIR}}/stage/"
+      - chmod +x "{{.DIST_DIR}}/stage/kubectl-b64edit"
+      # deterministic tar (fixed mtime/owner/order) so the sha256 is stable across rebuilds
+      - tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -C "{{.DIST_DIR}}/stage" -cf - . | gzip -n > "{{.ARCHIVE}}"
+      - rm -rf "{{.DIST_DIR}}/stage"
+      - 'echo "Archive: {{.ARCHIVE}}"'
+      - 'sha256sum "{{.ARCHIVE}}"'
+      - 'echo "Paste the sha256 above into .krew.yaml (spec.platforms[].sha256) before releasing."'
+
+  krew-install:
+    desc: Package and install locally via krew for testing (kubectl krew install --manifest --archive)
+    deps: [package]
+    cmds:
+      - |
+        SHA="$(sha256sum "{{.ARCHIVE}}" | awk '{print $1}')"
+        yq eval ".spec.platforms[0].sha256 = \"$SHA\"" .krew.yaml > "{{.DIST_DIR}}/manifest.yaml"
+        kubectl krew install --manifest="{{.DIST_DIR}}/manifest.yaml" --archive="{{.ARCHIVE}}"
+      - 'echo "Installed via krew. Try: kubectl b64edit --help"'
+
+  krew-uninstall:
+    desc: Remove the locally krew-installed plugin
+    cmds:
+      - kubectl krew uninstall b64edit
+
+  krew-manifest-bump:
+    desc: 'Bump .krew.yaml to a released version+sha256 (used by CI; VERSION=vX.Y.Z required, REPO=owner/name optional)'
+    requires:
+      vars: [VERSION]
+    vars:
+      REPO: '{{.REPO | default "stelucz/kubectl-b64edit"}}'
+    cmds:
+      - test -f "{{.ARCHIVE}}" || (echo "{{.ARCHIVE}} not found - run 'task package' first" && exit 1)
+      - |
+        SHA="$(sha256sum "{{.ARCHIVE}}" | awk '{print $1}')"
+        yq eval -i '
+          .spec.version = "{{.VERSION}}" |
+          .spec.platforms[0].uri = "https://github.com/{{.REPO}}/releases/download/{{.VERSION}}/kubectl-b64edit.tar.gz" |
+          .spec.platforms[0].sha256 = "'"$SHA"'"
+        ' .krew.yaml
+      - 'echo "Updated .krew.yaml -> version {{.VERSION}}"'

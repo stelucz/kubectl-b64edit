@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+# kubectl-b64edit - inline-edit base64 encoded fields of a Kubernetes resource
+# (Secrets, ConfigMaps, and generically any other resource) by decoding them
+# to plaintext in $EDITOR, then re-encoding only what changed on save.
+#
+# Usage:
+#   kubectl-b64edit [options] TYPE NAME
+#
+# Options:
+#   --context CTX        kubectl context to use
+#   --namespace NS        kubectl namespace (required for namespaced resources)
+#   --kubeconfig PATH     kubeconfig file to use
+#   --view                read-only: print the decoded buffer and exit
+#   --no-detect            only decode well-known fields (Secret.data /
+#                         ConfigMap.binaryData); skip heuristic detection
+#   --min-len N           minimum length to consider a string as base64 (default 16)
+#   --yes                 skip the confirmation prompt
+#   -h, --help            show this help
+#
+# Exit codes: 0 success/no-op, 1 usage error, 2 dependency missing,
+#             3 fetch error, 4 edit aborted/unchanged, 5 apply error.
+
+set -euo pipefail
+
+# Resolve through symlinks (e.g. ~/.local/bin/kubectl-b64edit -> repo/bin/...)
+# so the .jq helpers are found next to the real script, not the symlink.
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1; then
+  SCRIPT_SOURCE="$(readlink -f "$SCRIPT_SOURCE" 2>/dev/null || echo "$SCRIPT_SOURCE")"
+fi
+PROG_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+DECODE_JQ="$PROG_DIR/decode.jq"
+ENCODE_JQ="$PROG_DIR/encode.jq"
+SUMMARY_JQ="$PROG_DIR/summary.jq"
+
+CONTEXT=""
+NAMESPACE=""
+KUBECONFIG_PATH=""
+VIEW_ONLY=0
+ONLY_KNOWN=false
+MIN_LEN=16
+ASSUME_YES=0
+MAX_RETRIES=5
+
+usage() {
+  # kept as a literal heredoc rather than self-parsing the file above: the
+  # comment block's line numbers shift whenever the script is edited.
+  cat <<'EOF'
+kubectl-b64edit - inline-edit base64 encoded fields of a Kubernetes resource
+(Secrets, ConfigMaps, and generically any other resource) by decoding them
+to plaintext in $EDITOR, then re-encoding only what changed on save.
+
+Usage:
+  kubectl-b64edit [options] TYPE NAME
+
+Options:
+  --context CTX         kubectl context to use
+  --namespace NS        kubectl namespace (required for namespaced resources)
+  --kubeconfig PATH     kubeconfig file to use
+  --view                read-only: print the decoded buffer and exit
+  --no-detect           only decode well-known fields (Secret.data /
+                        ConfigMap.binaryData); skip heuristic detection
+  --min-len N           minimum length to consider a string as base64 (default 16)
+  --yes                 skip the confirmation prompt
+  -h, --help            show this help
+
+Exit codes: 0 success/no-op, 1 usage error, 2 dependency missing,
+            3 fetch error, 4 edit aborted/unchanged, 5 apply error.
+EOF
+}
+
+die() {
+  echo "kubectl-b64edit: error: $*" >&2
+  exit "${2:-1}"
+}
+
+# --- argument parsing -------------------------------------------------------
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --context) CONTEXT="$2"; shift 2 ;;
+    --namespace|-n) NAMESPACE="$2"; shift 2 ;;
+    --kubeconfig) KUBECONFIG_PATH="$2"; shift 2 ;;
+    --view) VIEW_ONLY=1; shift ;;
+    --no-detect) ONLY_KNOWN=true; shift ;;
+    --min-len) MIN_LEN="$2"; shift 2 ;;
+    --yes|-y) ASSUME_YES=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; break ;;
+    -*) die "unknown option: $1" ;;
+    *) break ;;
+  esac
+done
+
+[[ $# -eq 2 ]] || { usage; die "expected TYPE and NAME arguments" 1; }
+RES_TYPE="$1"
+RES_NAME="$2"
+
+# --- dependency checks -------------------------------------------------------
+for bin in kubectl jq yq sha256sum; do
+  command -v "$bin" >/dev/null 2>&1 || die "required dependency '$bin' not found in PATH" 2
+done
+if ! yq --version 2>&1 | grep -q mikefarah; then
+  die "yq found but is not the mikefarah/yq (Go) implementation; see https://github.com/mikefarah/yq" 2
+fi
+
+KCTL=(kubectl)
+[[ -n "$CONTEXT" ]] && KCTL+=(--context "$CONTEXT")
+[[ -n "$NAMESPACE" ]] && KCTL+=(--namespace "$NAMESPACE")
+[[ -n "$KUBECONFIG_PATH" ]] && KCTL+=(--kubeconfig "$KUBECONFIG_PATH")
+
+# --- secure temp workspace ---------------------------------------------------
+umask 077
+TMP_BASE="/dev/shm"
+[[ -d "$TMP_BASE" && -w "$TMP_BASE" ]] || TMP_BASE="${TMPDIR:-/tmp}"
+WORKDIR="$(mktemp -d "$TMP_BASE/b64edit.XXXXXXXX")"
+chmod 700 "$WORKDIR"
+
+cleanup() {
+  local f
+  for f in "$WORKDIR"/*; do
+    [[ -e "$f" ]] || continue
+    if command -v shred >/dev/null 2>&1; then
+      shred -u "$f" 2>/dev/null || rm -f "$f"
+    else
+      rm -f "$f"
+    fi
+  done
+  rmdir "$WORKDIR" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM HUP
+
+ORIGINAL_JSON="$WORKDIR/original.json"
+DECODED_JSON="$WORKDIR/decoded.json"
+PATHMAP_JSON="$WORKDIR/pathmap.json"
+BUFFER_YAML="$WORKDIR/buffer.yaml"
+EDITED_JSON="$WORKDIR/edited.json"
+FINAL_JSON="$WORKDIR/final.json"
+ERR_FILE="$WORKDIR/err.txt"
+
+# --- fetch -------------------------------------------------------------------
+if ! "${KCTL[@]}" get "$RES_TYPE" "$RES_NAME" -o json >"$ORIGINAL_JSON" 2>"$ERR_FILE"; then
+  cat "$ERR_FILE" >&2
+  die "failed to fetch $RES_TYPE/$RES_NAME" 3
+fi
+
+if [[ "$(jq -r '.immutable // false' "$ORIGINAL_JSON")" == "true" ]]; then
+  die "$RES_TYPE/$RES_NAME is marked immutable; it cannot be edited" 3
+fi
+
+KIND="$(jq -r '.kind' "$ORIGINAL_JSON")"
+NS="$(jq -r '.metadata.namespace // "-"' "$ORIGINAL_JSON")"
+RVERSION="$(jq -r '.metadata.resourceVersion' "$ORIGINAL_JSON")"
+
+# --- decode --------------------------------------------------------------
+jq --argjson minlen "$MIN_LEN" --argjson only_known "$ONLY_KNOWN" \
+   -f "$DECODE_JQ" "$ORIGINAL_JSON" >"$DECODED_JSON"
+
+jq '{decoded, keptEncoded}' "$DECODED_JSON" >"$PATHMAP_JSON"
+DECODED_KEYS="$(jq -r '.decoded | map(join(".")) | join(", ")' "$DECODED_JSON")"
+KEPT_KEYS="$(jq -r '.keptEncoded | map(join(".")) | join(", ")' "$DECODED_JSON")"
+
+{
+  echo "# kubectl-b64edit: $KIND/$RES_NAME -n $NS (context: ${CONTEXT:-current}, resourceVersion: $RVERSION)"
+  echo "# Decoded fields (edit freely): ${DECODED_KEYS:-none}"
+  echo "# Kept base64-encoded (binary/non-text or below --min-len): ${KEPT_KEYS:-none}"
+  echo "# WARNING: this file contains plaintext secret material and lives at:"
+  echo "#   $BUFFER_YAML"
+  echo "# It is shredded on exit. Save & quit to apply, quit without saving to abort."
+  echo "---"
+  jq '.buffer' "$DECODED_JSON" | yq -p json -o yaml -
+} >"$BUFFER_YAML"
+
+if [[ "$VIEW_ONLY" -eq 1 ]]; then
+  cat "$BUFFER_YAML"
+  exit 0
+fi
+
+# --- resolve editor ------------------------------------------------------
+EDITOR_CMD=""
+for var in K9S_EDITOR KUBE_EDITOR EDITOR; do
+  val="${!var:-}"
+  [[ -n "$val" ]] && { EDITOR_CMD="$val"; break; }
+done
+[[ -n "$EDITOR_CMD" ]] || EDITOR_CMD="vi"
+read -r -a EDITOR_ARR <<<"$EDITOR_CMD"
+
+BEFORE_HASH="$(sha256sum "$BUFFER_YAML" | awk '{print $1}')"
+
+attempt=0
+while :; do
+  attempt=$((attempt + 1))
+  "${EDITOR_ARR[@]}" "$BUFFER_YAML"
+  if yq -p yaml -o json "$BUFFER_YAML" >"$EDITED_JSON" 2>"$ERR_FILE"; then
+    break
+  fi
+  if [[ "$attempt" -ge "$MAX_RETRIES" ]]; then
+    die "buffer still invalid after $MAX_RETRIES attempts; aborting without applying" 4
+  fi
+  {
+    echo "# ERROR: buffer is not valid YAML/JSON, fix and save again (attempt $attempt/$MAX_RETRIES):"
+    sed 's/^/#   /' "$ERR_FILE"
+    echo "#"
+    cat "$BUFFER_YAML"
+  } >"$BUFFER_YAML.tmp"
+  mv "$BUFFER_YAML.tmp" "$BUFFER_YAML"
+done
+
+AFTER_HASH="$(sha256sum "$BUFFER_YAML" | awk '{print $1}')"
+if [[ "$BEFORE_HASH" == "$AFTER_HASH" ]]; then
+  echo "kubectl-b64edit: no changes made, nothing to do"
+  exit 0
+fi
+
+# --- re-encode -------------------------------------------------------------
+jq --slurpfile orig "$ORIGINAL_JSON" --slurpfile pm "$PATHMAP_JSON" \
+   -f "$ENCODE_JQ" "$EDITED_JSON" >"$FINAL_JSON"
+
+CHANGES="$(jq -r --slurpfile orig "$ORIGINAL_JSON" -f "$SUMMARY_JQ" "$FINAL_JSON")"
+if [[ -z "$CHANGES" ]]; then
+  echo "kubectl-b64edit: decoded values are unchanged after re-encoding, nothing to do"
+  exit 0
+fi
+
+echo "kubectl-b64edit: changes to apply to $KIND/$RES_NAME (key names only, values withheld):"
+echo "$CHANGES"
+
+# --- GitOps guard ------------------------------------------------------------
+if jq -e '
+      (.metadata.labels["app.kubernetes.io/managed-by"] == "Helm") or
+      (.metadata.annotations["argocd.argoproj.io/instance"] != null) or
+      (.metadata.annotations["kustomize.toolkit.fluxcd.io/name"] != null) or
+      ((.metadata.ownerReferences // []) | length > 0)
+    ' "$ORIGINAL_JSON" >/dev/null 2>&1; then
+  echo "kubectl-b64edit: WARNING: this resource looks GitOps/controller-managed" \
+       "(Helm/Argo CD/Flux/ownerReference) - this change may be silently reverted." >&2
+fi
+
+if [[ "$ASSUME_YES" -ne 1 ]]; then
+  read -r -p "Apply these changes to $KIND/$RES_NAME in $NS? [y/N] " reply
+  [[ "$reply" =~ ^[Yy]$ ]] || { echo "kubectl-b64edit: aborted, no changes applied"; exit 4; }
+fi
+
+# --- apply -------------------------------------------------------------------
+if ! "${KCTL[@]}" replace -f "$FINAL_JSON" 2>"$ERR_FILE"; then
+  if grep -qi "conflict\|resourceVersion" "$ERR_FILE"; then
+    cat "$ERR_FILE" >&2
+    die "resource changed concurrently (resourceVersion conflict); re-run to edit the latest version" 5
+  fi
+  cat "$ERR_FILE" >&2
+  die "kubectl replace failed" 5
+fi
+
+echo "kubectl-b64edit: applied changes to $KIND/$RES_NAME"

@@ -1,0 +1,45 @@
+# krew plugin manifest - https://krew.sigs.k8s.io/docs/developer-guide/plugin-manifest/
+#
+# Local testing (no hosting required):
+#   task package
+#   task krew-install
+#   kubectl b64edit --help
+#   task krew-uninstall
+#
+# Before submitting to krew-index or distributing via a custom index, make
+# sure `spec.version`/`spec.platforms[].uri`/`spec.platforms[].sha256` below
+# match a real published release. `.github/workflows/release.yml` updates
+# them automatically on every `vX.Y.Z` tag push (see `task krew-manifest-bump`
+# for the same logic, runnable locally for a manual release).
+apiVersion: krew.googlecontainertools.github.com/v1alpha2
+kind: Plugin
+metadata:
+  name: b64edit
+spec:
+  version: "v0.1.0"
+  homepage: https://github.com/stelucz/kubectl-b64edit
+  shortDescription: "Inline-edit base64 fields of Secrets/ConfigMaps"
+  description: |
+    Decodes base64 fields of a Kubernetes resource (Secret.data,
+    ConfigMap.binaryData, and heuristically any other base64-looking string
+    field) to plaintext, opens it in $EDITOR, then re-encodes only what
+    changed and applies it with `kubectl replace` using the original
+    resourceVersion for optimistic concurrency. Untouched values are restored
+    byte-for-byte. Also ships a matching k9s plugin (Shift-E / Shift-V).
+  caveats: |
+    Requires `jq` (>=1.6) and the Go/mikefarah `yq` (not the Python yq) to be
+    installed and on PATH. RBAC: needs `get` and `update` on the target
+    resource. The matching k9s plugin (Shift-E / Shift-V) is not installed by
+    krew; copy plugins/b64edit.yaml from the repo into your k9s plugins dir,
+    or run `task install` from a checkout of the repo.
+  platforms:
+    - selector:
+        matchExpressions:
+          - key: "os"
+            operator: "In"
+            values:
+              - darwin
+              - linux
+      uri: https://github.com/stelucz/kubectl-b64edit/releases/download/v0.1.0/kubectl-b64edit.tar.gz
+      sha256: "2358750c7f0e8b2d904883f7668032573c88a88afc259ca5f47e8aff22fc7174"
+      bin: kubectl-b64edit
