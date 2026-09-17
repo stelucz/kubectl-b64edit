@@ -10,7 +10,7 @@ tasks:
   lint:
     desc: Shellcheck the executable script and test harness (warnings and above)
     cmds:
-      - shellcheck -S warning bin/kubectl-b64edit
+      - shellcheck -S warning bin/kubectl-b64edit bin/kubectl_complete-b64edit
       - shellcheck -S warning test/run.sh test/stubs/kubectl test/stubs/editor
 
   test:
@@ -23,6 +23,7 @@ tasks:
     cmds:
       - mkdir -p "{{.BIN_DIR}}"
       - ln -sf "{{.TASKFILE_DIR}}/bin/kubectl-b64edit" "{{.BIN_DIR}}/kubectl-b64edit"
+      - ln -sf "{{.TASKFILE_DIR}}/bin/kubectl_complete-b64edit" "{{.BIN_DIR}}/kubectl_complete-b64edit"
       - mkdir -p "{{.XDG_DATA_HOME}}/k9s/plugins"
       - cp "{{.TASKFILE_DIR}}/plugins/b64edit.yaml" "{{.XDG_DATA_HOME}}/k9s/plugins/b64edit.yaml"
       - 'echo "Installed. Ensure {{.BIN_DIR}} is on PATH (also reachable as: kubectl b64edit ...)"'
@@ -31,6 +32,7 @@ tasks:
     desc: Remove the installed symlink and k9s plugin file
     cmds:
       - rm -f "{{.BIN_DIR}}/kubectl-b64edit"
+      - rm -f "{{.BIN_DIR}}/kubectl_complete-b64edit"
       - rm -f "{{.XDG_DATA_HOME}}/k9s/plugins/b64edit.yaml"
 
   package:
@@ -38,8 +40,8 @@ tasks:
     cmds:
       - rm -rf "{{.DIST_DIR}}"
       - mkdir -p "{{.DIST_DIR}}/stage"
-      - cp bin/kubectl-b64edit bin/decode.jq bin/encode.jq bin/summary.jq LICENSE README.md "{{.DIST_DIR}}/stage/"
-      - chmod +x "{{.DIST_DIR}}/stage/kubectl-b64edit"
+      - cp bin/kubectl-b64edit bin/kubectl_complete-b64edit bin/decode.jq bin/encode.jq bin/summary.jq LICENSE README.md "{{.DIST_DIR}}/stage/"
+      - chmod +x "{{.DIST_DIR}}/stage/kubectl-b64edit" "{{.DIST_DIR}}/stage/kubectl_complete-b64edit"
       - tar -C "{{.DIST_DIR}}/stage" -czf "{{.ARCHIVE}}" .
       - rm -rf "{{.DIST_DIR}}/stage"
       - 'echo "Archive: {{.ARCHIVE}}"'

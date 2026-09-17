@@ -93,6 +93,24 @@ This symlinks `bin/kubectl-b64edit` into `~/.local/bin` (make sure it's on
 `plugins/b64edit.yaml` into `${XDG_DATA_HOME:-~/.local/share}/k9s/plugins/`.
 `task uninstall` reverses both steps.
 
+### Shell completion (optional)
+
+`kubectl` (>=1.26) supports plugin completion by looking for an executable
+named `kubectl_complete-<plugin>` on `PATH` - `bin/kubectl_complete-b64edit`
+completes both `TYPE` (resource kinds) and `NAME` (via `kubectl get`, scoped
+to `--namespace`/`--context` if already typed) once `kubectl completion
+<shell>` is sourced (see `kubectl completion --help`).
+
+`task install` symlinks it automatically. If you installed via krew instead,
+krew only exposes the main `kubectl-b64edit` binary, so link the completion
+script in manually (this works regardless of install method, since it
+resolves through whichever symlink is currently on `PATH`):
+
+```sh
+ln -sf "$(dirname "$(readlink -f "$(command -v kubectl-b64edit)")")/kubectl_complete-b64edit" \
+  "$(dirname "$(command -v kubectl-b64edit)")/kubectl_complete-b64edit"
+```
+
 ## Usage
 
 ```sh

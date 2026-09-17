@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# kubectl_complete-b64edit - shell completion helper for `kubectl b64edit`,
+# following kubectl's plugin completion convention: kubectl looks up an
+# executable named kubectl_complete-<plugin> on PATH and calls it with the
+# already-typed words plus the partial word being completed, then prints
+# one candidate per line to stdout.
+# https://github.com/kubernetes/kubectl/blob/master/pkg/cmd/plugin/plugin_completion.go
+#
+# Requires `kubectl completion <shell>` to be sourced (kubectl >= 1.26).
+set -uo pipefail
+
+FLAGS=(--context --namespace --kubeconfig --view --no-detect --min-len --yes --help)
+
+args=("$@")
+n=${#args[@]}
+toComplete="${args[$((n - 1))]}"
+words=("${args[@]:0:$((n - 1))}")
+
+CONTEXT=""
+NAMESPACE=""
+positionals=()
+
+i=0
+while [[ $i -lt ${#words[@]} ]]; do
+  w="${words[$i]}"
+  case "$w" in
+    --context) CONTEXT="${words[$((i + 1))]:-}"; i=$((i + 2)) ;;
+    --namespace | -n) NAMESPACE="${words[$((i + 1))]:-}"; i=$((i + 2)) ;;
+    --kubeconfig | --min-len) i=$((i + 2)) ;;
+    -*) i=$((i + 1)) ;;
+    *) positionals+=("$w"); i=$((i + 1)) ;;
+  esac
+done
+
+KCTL=(kubectl)
+[[ -n "$CONTEXT" ]] && KCTL+=(--context "$CONTEXT")
+[[ -n "$NAMESPACE" ]] && KCTL+=(--namespace "$NAMESPACE")
+
+# completing a flag name, e.g. "--vi<TAB>"
+if [[ "$toComplete" == -* ]]; then
+  printf '%s\n' "${FLAGS[@]}" | grep -F -- "$toComplete"
+  exit 0
+fi
+
+# completing the value of the immediately preceding flag
+if [[ ${#words[@]} -gt 0 ]]; then
+  prev="${words[$((${#words[@]} - 1))]}"
+  case "$prev" in
+    --context)
+      kubectl config get-contexts -o name 2>/dev/null | grep -F -- "$toComplete"
+      exit 0
+      ;;
+    --namespace | -n)
+      "${KCTL[@]}" get namespaces -o name 2>/dev/null | sed 's#^namespace/##' | grep -F -- "$toComplete"
+      exit 0
+      ;;
+  esac
+fi
+
+# positional TYPE then NAME; nothing more to complete after that
+case "${#positionals[@]}" in
+  0)
+    {
+      printf '%s\n' secret secrets configmap configmaps
+      kubectl api-resources --no-headers -o name 2>/dev/null
+    } | awk '!seen[$0]++' | grep -F -- "$toComplete"
+    ;;
+  1)
+    "${KCTL[@]}" get "${positionals[0]}" -o name 2>/dev/null | sed 's#^[^/]*/##' | grep -F -- "$toComplete"
+    ;;
+  *) ;;
+esac
+exit 0
