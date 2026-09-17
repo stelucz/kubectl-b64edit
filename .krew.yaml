@@ -16,7 +16,7 @@ kind: Plugin
 metadata:
   name: b64edit
 spec:
-  version: "v1.0.0"
+  version: "v1.1.0"
   homepage: https://github.com/stelucz/kubectl-b64edit
   shortDescription: "Inline-edit base64 fields of Secrets/ConfigMaps"
   description: |
@@ -40,6 +40,6 @@ spec:
             values:
               - darwin
               - linux
-      uri: https://github.com/stelucz/kubectl-b64edit/releases/download/v1.0.0/kubectl-b64edit.tar.gz
-      sha256: "e9a35fbc2151e1cb022a0da3e8e2b9c82c3d5609784ea352e3366f22042a00fc"
+      uri: https://github.com/stelucz/kubectl-b64edit/releases/download/v1.1.0/kubectl-b64edit.tar.gz
+      sha256: "4b1d1a78ee2a6567104357bc2f49ca7454fed4061baab9764749c22a4d46be84"
       bin: kubectl-b64edit
