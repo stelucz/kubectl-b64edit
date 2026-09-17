@@ -42,30 +42,41 @@ concurrency check or renaming/relocating the object.
 
 ### Via krew
 
-This repo is packaged as a [krew](https://krew.sigs.k8s.io) plugin manifest
-(`.krew.yaml`), but isn't (yet) submitted to the official
-[krew-index](https://github.com/kubernetes-sigs/krew-index) - so for now,
-install it locally from a checkout:
+Once a release has been tagged and built by CI (see below), install straight
+from this repository - no clone needed:
 
 ```sh
-task package        # builds dist/kubectl-b64edit.tar.gz and prints its sha256
-task krew-install   # kubectl krew install --manifest=.krew.yaml --archive=...
+kubectl krew install --manifest-url=https://raw.githubusercontent.com/stelucz/kubectl-b64edit/main/.krew.yaml
 ```
 
-`task krew-uninstall` removes it (`kubectl krew uninstall b64edit`). This only
-installs the `kubectl-b64edit`/`kubectl b64edit` binary - the k9s plugin file
-still needs `task install` (below) or a manual copy of `plugins/b64edit.yaml`.
+This isn't (yet) submitted to the official
+[krew-index](https://github.com/kubernetes-sigs/krew-index), so it won't show
+up under a plain `kubectl krew install b64edit` - the `--manifest-url` form
+above is required until that submission happens. `kubectl krew uninstall
+b64edit` removes it. This only installs the `kubectl-b64edit`/`kubectl
+b64edit` binary - the k9s plugin file still needs `task install` (below) or a
+manual copy of `plugins/b64edit.yaml`.
 
-Once pushed to GitHub, `.github/workflows/release.yml` automates releases: on
-every `vX.Y.Z` tag push it runs `task lint test`, builds the tarball with
-`task package` (output is byte-reproducible, so the checksum doesn't drift
-between builds), publishes a GitHub release with the tarball attached, and
-commits the resulting `version`/`uri`/`sha256` into `.krew.yaml` on the
-default branch - so `kubectl krew install --manifest=<raw-url-to-.krew.yaml>`
-always installs the latest tagged release without any manual editing. The
-same version-bump logic is available locally as `task krew-manifest-bump
-VERSION=vX.Y.Z` for manual releases. To also submit to the official
-krew-index, follow krew's [submission
+`.github/workflows/release.yml` builds this on every `vX.Y.Z` tag push: it
+runs `task lint test`, builds the tarball with `task package`, publishes a
+GitHub release with the tarball attached, and commits the resulting
+`version`/`uri`/`sha256` into `.krew.yaml` on the default branch - so the
+command above always installs the latest tagged release. The same
+version-bump logic is available locally as `task krew-manifest-bump
+VERSION=vX.Y.Z` for manual releases.
+
+#### Local testing (before a release exists)
+
+From a checkout, build and install whatever is currently on disk - including
+uncommitted changes - bypassing whatever release `.krew.yaml` currently points
+to:
+
+```sh
+task krew-install    # runs task package, then kubectl krew install --manifest=... --archive=...
+task krew-uninstall  # kubectl krew uninstall b64edit
+```
+
+To also submit to the official krew-index, follow krew's [submission
 guide](https://krew.sigs.k8s.io/docs/developer-guide/release/new-plugin/); the
 [krew-release-bot](https://github.com/rajatjindal/krew-release-bot) GitHub
 Action can automate opening that PR on every tag once the first submission is

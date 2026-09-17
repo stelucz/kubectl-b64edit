@@ -40,8 +40,7 @@ tasks:
       - mkdir -p "{{.DIST_DIR}}/stage"
       - cp bin/kubectl-b64edit bin/decode.jq bin/encode.jq bin/summary.jq LICENSE README.md "{{.DIST_DIR}}/stage/"
       - chmod +x "{{.DIST_DIR}}/stage/kubectl-b64edit"
-      # deterministic tar (fixed mtime/owner/order) so the sha256 is stable across rebuilds
-      - tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -C "{{.DIST_DIR}}/stage" -cf - . | gzip -n > "{{.ARCHIVE}}"
+      - tar -C "{{.DIST_DIR}}/stage" -czf "{{.ARCHIVE}}" .
       - rm -rf "{{.DIST_DIR}}/stage"
       - 'echo "Archive: {{.ARCHIVE}}"'
       - 'sha256sum "{{.ARCHIVE}}"'
